@@ -6,9 +6,9 @@
 
 #include "init.h"
 #define ARRAY_SIZE 1000
-#define TRANSFER_SIZE 4
+#define DMA_TRANSFER_SIZE 1
 
-//#define USE_DMA
+#define USE_DMA
 
 void Init_DMA();
 void Transfer_Complete(DMA_HandleTypeDef *handle);
@@ -46,7 +46,7 @@ int main(void) {
 	fflush(stdout);
 #ifdef USE_DMA
 	HAL_DMA_Start_IT(&dma_handle, (uint32_t) fromArr, (uint32_t) toArr,
-	ARRAY_SIZE / TRANSFER_SIZE);
+	ARRAY_SIZE / DMA_TRANSFER_SIZE);
 	flag = 0;
 #endif
 
@@ -79,7 +79,7 @@ void Init_DMA() {
 					.FIFOMode = DMA_FIFOMODE_DISABLE, .MemBurst =
 					DMA_MBURST_INC16, .PeriphBurst = DMA_PBURST_INC16 };
 
-	switch (TRANSFER_SIZE) {
+	switch (DMA_TRANSFER_SIZE) {
 	case 1:
 		dma_handle.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
 		dma_handle.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
