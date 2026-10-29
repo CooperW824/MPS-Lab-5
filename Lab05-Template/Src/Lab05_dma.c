@@ -41,11 +41,9 @@ int main(void)
 	strcpy(toArr, "What are they doing right now?");
 	printf("FromArr: %s\r\nToArr: %s\r\n", fromArr, toArr);
 	fflush(stdout);
-	HAL_DMA_Start_IT(&dma_handle, (uint32_t)fromArr, (uint32_t)toArr, 1000);
-	flag = 0;
+//	HAL_DMA_Start_IT(&dma_handle, (uint32_t)fromArr, (uint32_t)toArr, 1000);
 	DWT->CYCCNT = 0;
-
-	while(!flag);
+	memcpy(toArr, fromArr, 1000);
 	cycles = DWT->CYCCNT;
 	printf("Cycles: %ld\r\nFromArr: %s\r\nToArr: %s\r\n", cycles, fromArr, toArr);
 	fflush(stdout);
