@@ -41,7 +41,7 @@ int main(void)
 	strcpy(toArr, "What are they doing right now?");
 	printf("FromArr: %s\r\nToArr: %s\r\n", fromArr, toArr);
 	fflush(stdout);
-	HAL_DMA_Start_IT(&dma_handle, (uint32_t)fromArr, (uint32_t)toArr, 1000);
+	HAL_DMA_Start_IT(&dma_handle, (uint32_t)fromArr, (uint32_t)toArr, 1000/4);
 	flag = 0;
 	DWT->CYCCNT = 0;
 
@@ -50,6 +50,7 @@ int main(void)
 	printf("Cycles: %ld\r\nFromArr: %s\r\nToArr: %s\r\n", cycles, fromArr, toArr);
 	fflush(stdout);
 
+	while(1);
 }
 
 void Init_DMA() {
@@ -59,8 +60,8 @@ void Init_DMA() {
 	dma_handle.Instance = DMA2_Stream0;
 	dma_handle.Init = (DMA_InitTypeDef){
 			.Channel = DMA_CHANNEL_0, .Direction = DMA_MEMORY_TO_MEMORY, .MemInc = DMA_MINC_ENABLE, .PeriphInc = DMA_PINC_ENABLE,
-			.MemDataAlignment = DMA_MDATAALIGN_BYTE, .Mode = DMA_NORMAL, .Priority = DMA_PRIORITY_VERY_HIGH,
-			.FIFOMode = DMA_FIFOMODE_DISABLE, .MemBurst = DMA_MBURST_INC16
+			.MemDataAlignment = DMA_MDATAALIGN_WORD, .PeriphDataAlignment = DMA_PDATAALIGN_WORD, .Mode = DMA_NORMAL, .Priority = DMA_PRIORITY_VERY_HIGH,
+			.FIFOMode = DMA_FIFOMODE_DISABLE, .MemBurst = DMA_MBURST_INC16, .PeriphBurst = DMA_PBURST_INC16
 	};
 	dma_handle.XferCpltCallback = Transfer_Complete;
 	HAL_DMA_Init(&dma_handle);
