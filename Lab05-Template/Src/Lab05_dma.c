@@ -5,8 +5,10 @@
 //
 
 #include "init.h"
-#define ARRAY_SIZE 256
+#define ARRAY_SIZE 1000
 #define TRANSFER_SIZE 4
+
+//#define USE_DMA
 
 void Init_DMA();
 void Transfer_Complete(DMA_HandleTypeDef *handle);
@@ -42,13 +44,20 @@ int main(void) {
 	strcpy(toArr, "What are they doing right now?");
 	printf("FromArr: %s\r\nToArr: %s\r\n", fromArr, toArr);
 	fflush(stdout);
+#ifdef USE_DMA
 	HAL_DMA_Start_IT(&dma_handle, (uint32_t) fromArr, (uint32_t) toArr,
 	ARRAY_SIZE / TRANSFER_SIZE);
 	flag = 0;
+#endif
+
 	DWT->CYCCNT = 0;
 
+#ifdef USE_DMA
 	while (!flag)
 		;
+#else
+	memcpy(toArr, fromArr, ARRAY_SIZE);
+#endif
 	cycles = DWT->CYCCNT;
 	printf("Cycles: %ld\r\nFromArr: %s\r\nToArr: %s\r\n", cycles, fromArr,
 			toArr);
