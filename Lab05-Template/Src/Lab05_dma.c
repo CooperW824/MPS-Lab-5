@@ -35,7 +35,8 @@ uint16_t start_minus_1 = 0;
 float prev_output = 0;
 uint16_t writeOuts[ARRAY_SIZE] = { 0 };
 
-uint8_t first_half_flag = 1;
+uint8_t past_half_flag = 0;
+uint8_t half_complete_flag = 0;
 
 int main(void) {
 	Sys_Init();
@@ -54,27 +55,9 @@ int main(void) {
 
 	// Code goes here
 	while (1) {
-		// Will block until the ADC is ready for conversion
-		HAL_ADC_PollForConversion(&hadc, HAL_MAX_DELAY);
-
-		adc_input = (uint16_t) HAL_ADC_GetValue(&hadc);
-
-		samples[ring_buffer_idx] = ((float) adc_input) / 4095.0f;
-
-		// Since modulo in C is truncated (a.k.a. can have negative values), using the compliment positive is easier (e.g. -1 -> +2, -2 -> +1).
-		prev_output =
-				0.3125f
-						* (samples[ring_buffer_idx]
-								+ samples[(ring_buffer_idx + 1) % 3])
-						+ 0.240385f * samples[(ring_buffer_idx + 2) % 3]
-						+ 0.296875f * prev_output;
-
-		dac_out = (uint16_t) ((prev_output) * 4096.0f);
-
-		HAL_DAC_SetValue(&hdac, DAC1_CHANNEL_1, DAC_ALIGN_12B_R, dac_out);
-
-		ring_buffer_idx += 1;
-		ring_buffer_idx %= 3;
+		while (!half_complete_flag); // Busy wait for readings to fill half of the buffer
+		applyFilter(past_half_flag);
+		past_half_flag = !past_half_flag; // Toggle
 	}
 }
 
@@ -282,14 +265,7 @@ void DMA2_Stream0_IRQHandler() {
 }
 
 void HAL_ADC_ConvHalfCpltCallback() {
-	// Do the filtering from rawReadings to writeOuts
-	if(first_half_flag) {
-		memcpy(writeOuts, rawReadings, ARRAY_SIZE/2);
-		first_half_flag = 0;
-	} else {
-		memcpy(writeOuts+ARRAY_SIZE/2, rawReadings+ARRAY_SIZE/2, ARRAY_SIZE/2);
-		first_half_flag = 1;
-	}
+	half_complete_flag = 1;
 }
 
 
