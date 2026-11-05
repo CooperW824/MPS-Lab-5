@@ -9,6 +9,9 @@
 #define DMA_TRANSFER_SIZE 1
 
 #define DAC_MAX_VALUE (1 << 12)
+#define PROPER_MOD(operand, modulo) (((operand % modulo) + modulo) % modulo)
+#define ADC_TO_FLOAT(input) (((float) input) / 4096.0)
+#define FLOAT_TO_DAC(output) ((int)(((float) output) * 4096.0))
 
 DMA_HandleTypeDef dma_handle_adc;
 DMA_HandleTypeDef dma_handle_dac;
@@ -16,7 +19,7 @@ volatile uint8_t flag;
 
 void configureADC();
 void configureDAC();
-int8_t modulo_i8(int8_t operand, int8_t modulo);
+void applyFilter(uint8_t which_half);
 
 ADC_HandleTypeDef hadc;
 ADC_ChannelConfTypeDef adc_channel6_cfg;
@@ -29,8 +32,11 @@ DAC_ChannelConfTypeDef channel1_cfg;
 //int8_t ring_buffer_idx = 0;
 //uint16_t dac_out = 0;
 
-uint16_t rawReadings[ARRAY_SIZE] = {0};
-uint16_t writeOuts[ARRAY_SIZE] = {0};
+uint16_t rawReadings[ARRAY_SIZE] = { 0 };
+uint16_t start_minus_2 = 0;
+uint16_t start_minus_1 = 0;
+float prev_output = 0;
+uint16_t writeOuts[ARRAY_SIZE] = { 0 };
 
 int main(void) {
 	Sys_Init();
@@ -41,9 +47,10 @@ int main(void) {
 
 	HAL_DAC_SetValue(&hdac, DAC1_CHANNEL_1, DAC_ALIGN_12B_R, prev_output);
 
-	HAL_DAC_Start_DMA(&hdac, DAC1_CHANNEL_1, (uint32_t*)writeOuts, ARRAY_SIZE, DAC_ALIGN_12B_R);
+	HAL_DAC_Start_DMA(&hdac, DAC1_CHANNEL_1, (uint32_t*) writeOuts, ARRAY_SIZE,
+	DAC_ALIGN_12B_R);
 
-	HAL_ADC_Start_DMA(&hadc, (uint32_t*)rawReadings, ARRAY_SIZE);
+	HAL_ADC_Start_DMA(&hadc, (uint32_t*) rawReadings, ARRAY_SIZE);
 
 	// Code goes here
 	while (1) {
@@ -55,19 +62,67 @@ int main(void) {
 		samples[ring_buffer_idx] = ((float) adc_input) / 4095.0f;
 
 		// Since modulo in C is truncated (a.k.a. can have negative values), using the compliment positive is easier (e.g. -1 -> +2, -2 -> +1).
-		prev_output = 0.3125f*(samples[ring_buffer_idx]+samples[(ring_buffer_idx+1)%3]) + 0.240385f*samples[(ring_buffer_idx+2)%3] + 0.296875f*prev_output;
+		prev_output =
+				0.3125f
+						* (samples[ring_buffer_idx]
+								+ samples[(ring_buffer_idx + 1) % 3])
+						+ 0.240385f * samples[(ring_buffer_idx + 2) % 3]
+						+ 0.296875f * prev_output;
 
 		dac_out = (uint16_t) ((prev_output) * 4096.0f);
 
-		HAL_DAC_SetValue(&hdac, DAC1_CHANNEL_1, DAC_ALIGN_12B_R, dac_out );
+		HAL_DAC_SetValue(&hdac, DAC1_CHANNEL_1, DAC_ALIGN_12B_R, dac_out);
 
 		ring_buffer_idx += 1;
 		ring_buffer_idx %= 3;
 	}
 }
 
-int8_t modulo_i8(int8_t operand, int8_t modulo) {
-	return ((operand % modulo) + modulo) % modulo;
+void applyFilter(uint8_t which_half) {
+	uint16_t i, end;
+	if (which_half == 1) {
+		// Upper half of the array
+		i = ARRAY_SIZE / 2;
+		end = ARRAY_SIZE;
+		start_minus_2 = rawReadings[ARRAY_SIZE - 2];
+		start_minus_2 = rawReadings[ARRAY_SIZE - 1];
+	} else {
+		i = 0;
+		end = ARRAY_SIZE / 2;
+
+	}
+
+	prev_output = 0.296875f * prev_output;
+	prev_output += 0.3125f * ADC_TO_FLOAT(start_minus_2);
+	prev_output += 0.240385f * ADC_TO_FLOAT(start_minus_1);
+	prev_output += 0.3125f * ADC_TO_FLOAT(rawReadings[i]);
+
+	writeOuts[i] = FLOAT_TO_DAC(prev_output);
+
+	prev_output = 0.296875f * prev_output;
+	prev_output += 0.3125f * ADC_TO_FLOAT(start_minus_1);
+	prev_output += 0.240385f * ADC_TO_FLOAT(rawReadings[i]);
+	prev_output += 0.3125f * ADC_TO_FLOAT(rawReadings[i + 1]);
+
+	writeOuts[i + 1] = FLOAT_TO_DAC(prev_output);
+
+	i += 2;
+
+	for (; i < end; i++) {
+		prev_output = 0.3125f
+				* (ADC_TO_FLOAT(rawReadings[i])
+						+ ADC_TO_FLOAT(rawReadings[i - 2]))
+				+ 0.240385f * ADC_TO_FLOAT(rawReadings[i - 1])
+				+ 0.296875f * prev_output;
+	}
+
+	if (which_half == 1) {
+		start_minus_2 = rawReadings[ARRAY_SIZE - 2];
+		start_minus_1 = rawReadings[ARRAY_SIZE - 1];
+	} else {
+		start_minus_ = rawReadings[ARRAY_SIZE / 2 - 3];
+		start_minus_1 = rawReadings[ARRAY_SIZE / 2 - 2];
+	}
 }
 
 void configureADC() {
@@ -127,12 +182,13 @@ void HAL_DAC_MspInit(DAC_HandleTypeDef *hdac) {
 
 		dma_handle_dac.Instance = DMA1_Stream5;
 		dma_handle_dac.Init = (DMA_InitTypeDef ) { .Channel = DMA_CHANNEL_7,
-						.Direction = DMA_MEMORY_TO_PERIPH,
-						.MemInc = DMA_MINC_ENABLE, .PeriphInc = DMA_PINC_DISABLE,
-						.Mode = DMA_CIRCULAR, .Priority = DMA_PRIORITY_VERY_HIGH,
-						.MemDataAlignment = DMA_MDATAALIGN_HALFWORD,
-						.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD,
-						.FIFOMode = DMA_FIFOMODE_DISABLE, .MemBurst =
+						.Direction = DMA_MEMORY_TO_PERIPH, .MemInc =
+						DMA_MINC_ENABLE, .PeriphInc = DMA_PINC_DISABLE, .Mode =
+								DMA_CIRCULAR,
+						.Priority = DMA_PRIORITY_VERY_HIGH, .MemDataAlignment =
+						DMA_MDATAALIGN_HALFWORD, .PeriphDataAlignment =
+						DMA_PDATAALIGN_HALFWORD, .FIFOMode =
+						DMA_FIFOMODE_DISABLE, .MemBurst =
 						DMA_MBURST_INC16, .PeriphBurst = DMA_PBURST_SINGLE };
 
 		HAL_DMA_Init(&dma_handle_dac);
@@ -143,7 +199,9 @@ void HAL_DAC_MspInit(DAC_HandleTypeDef *hdac) {
 	}
 }
 
-void DMA1_Stream5_IRQHandler() { HAL_DMA_IRQHandler(&dma_handle_dac); }
+void DMA1_Stream5_IRQHandler() {
+	HAL_DMA_IRQHandler(&dma_handle_dac);
+}
 
 void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc) {
 
@@ -159,12 +217,13 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc) {
 
 		dma_handle_adc.Instance = DMA2_Stream0;
 		dma_handle_adc.Init = (DMA_InitTypeDef ) { .Channel = DMA_CHANNEL_0,
-						.Direction = DMA_PERIPH_TO_MEMORY,
-						.MemInc = DMA_MINC_ENABLE, .PeriphInc = DMA_PINC_DISABLE,
-						.Mode = DMA_CIRCULAR, .Priority = DMA_PRIORITY_VERY_HIGH,
-						.MemDataAlignment = DMA_MDATAALIGN_HALFWORD,
-						.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD,
-						.FIFOMode = DMA_FIFOMODE_DISABLE, .MemBurst =
+						.Direction = DMA_PERIPH_TO_MEMORY, .MemInc =
+						DMA_MINC_ENABLE, .PeriphInc = DMA_PINC_DISABLE, .Mode =
+								DMA_CIRCULAR,
+						.Priority = DMA_PRIORITY_VERY_HIGH, .MemDataAlignment =
+						DMA_MDATAALIGN_HALFWORD, .PeriphDataAlignment =
+						DMA_PDATAALIGN_HALFWORD, .FIFOMode =
+						DMA_FIFOMODE_DISABLE, .MemBurst =
 						DMA_MBURST_INC16, .PeriphBurst = DMA_PBURST_SINGLE };
 
 		HAL_DMA_Init(&dma_handle_adc);
@@ -175,7 +234,9 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc) {
 	}
 }
 
-void DMA2_Stream0_IRQHandler() { HAL_DMA_IRQHandler(&dma_handle_adc); }
+void DMA2_Stream0_IRQHandler() {
+	HAL_DMA_IRQHandler(&dma_handle_adc);
+}
 
 void HAL_ADC_ConvHalfCpltCallback() {
 
