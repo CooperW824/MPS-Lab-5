@@ -11,7 +11,7 @@
 #define DAC_MAX_VALUE (1 << 12)
 #define PROPER_MOD(operand, modulo) (((operand % modulo) + modulo) % modulo)
 #define ADC_TO_FLOAT(input) (((float) input) / 4096.0f)
-#define FLOAT_TO_DAC(output) ((int)(((float) output) * 4096.0f))
+#define FLOAT_TO_DAC(output) ((uint32_t)(((float) output) * 4096.0f))
 
 DMA_HandleTypeDef dma_handle_adc;
 DMA_HandleTypeDef dma_handle_dac;
@@ -29,14 +29,14 @@ DAC_ChannelConfTypeDef channel1_cfg;
 
 TIM_HandleTypeDef tim6_handle;
 
-uint16_t rawReadings[ARRAY_SIZE] = { 0 };
+uint32_t rawReadings[ARRAY_SIZE];
 uint16_t start_minus_2 = 0;
-uint16_t start_minus_1 = 0;
+uint32_t start_minus_1 = 0;
 float prev_output = 0;
-uint16_t writeOuts[ARRAY_SIZE] = { 0 };
+uint32_t writeOuts[ARRAY_SIZE];
 
-uint8_t past_half_flag = 0;
-uint8_t half_complete_flag = 0;
+volatile uint8_t ready_half = 0;
+volatile uint8_t half_complete_flag = 0;
 
 int main(void) {
 	Sys_Init();
@@ -44,20 +44,19 @@ int main(void) {
 	configureADC();
 	configureDAC();
 
-	// Lab 4
+	HAL_TIM_Base_Start(&tim6_handle);
 
-	HAL_DAC_SetValue(&hdac, DAC1_CHANNEL_1, DAC_ALIGN_12B_R, prev_output);
-
-	HAL_DAC_Start_DMA(&hdac, DAC1_CHANNEL_1, (uint32_t*) writeOuts, ARRAY_SIZE,
+	HAL_DAC_Start_DMA(&hdac, DAC1_CHANNEL_1, writeOuts, ARRAY_SIZE,
 	DAC_ALIGN_12B_R);
 
-	HAL_ADC_Start_DMA(&hadc, (uint32_t*) rawReadings, ARRAY_SIZE);
+	HAL_ADC_Start_DMA(&hadc, rawReadings, ARRAY_SIZE);
 
 	// Code goes here
 	while (1) {
-		while (!half_complete_flag); // Busy wait for readings to fill half of the buffer
-		applyFilter(past_half_flag);
-		past_half_flag = !past_half_flag; // Toggle
+		while (!half_complete_flag)
+			; // Busy wait for readings to fill half of the buffer
+		applyFilter(ready_half);
+		half_complete_flag = 0;
 	}
 }
 
@@ -102,8 +101,8 @@ void applyFilter(uint8_t which_half) {
 		start_minus_2 = rawReadings[ARRAY_SIZE - 2];
 		start_minus_1 = rawReadings[ARRAY_SIZE - 1];
 	} else {
-		start_minus_2 = rawReadings[ARRAY_SIZE / 2 - 3];
-		start_minus_1 = rawReadings[ARRAY_SIZE / 2 - 2];
+		start_minus_2 = rawReadings[ARRAY_SIZE / 2 - 2];
+		start_minus_1 = rawReadings[ARRAY_SIZE / 2 - 1];
 	}
 }
 
@@ -122,8 +121,8 @@ void Init_Timer() {
 	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
 	HAL_TIM_ConfigClockSource(&tim6_handle, &sClockSourceConfig);
 
-	sMasterConfig.MasterOutputTrigger=TIM_TRGO_UPDATE;
-	sMasterConfig.MasterSlaveMode=TIM_MASTERSLAVEMODE_DISABLE;
+	sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
 	HAL_TIMEx_MasterConfigSynchronization(&tim6_handle, &sMasterConfig);
 }
 
@@ -138,10 +137,31 @@ void configureADC() {
 	hadc.Init.DataAlign = ADC_DATAALIGN_RIGHT;
 	hadc.Init.ScanConvMode = ADC_SCAN_DISABLE;
 	hadc.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-	hadc.Init.ContinuousConvMode = ENABLE;
+	hadc.Init.ContinuousConvMode = DISABLE;
 	hadc.Init.DMAContinuousRequests = ENABLE;
 	hadc.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T6_TRGO;
 	hadc.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+
+	// Associated DMA Initialization
+
+	__HAL_RCC_DMA2_CLK_ENABLE();
+
+	dma_handle_adc.Instance = DMA2_Stream0;
+	dma_handle_adc.Init = (DMA_InitTypeDef ) { .Channel = DMA_CHANNEL_0,
+					.Direction = DMA_PERIPH_TO_MEMORY, .MemInc =
+					DMA_MINC_ENABLE, .PeriphInc = DMA_PINC_DISABLE, .Mode =
+					DMA_CIRCULAR, .Priority = DMA_PRIORITY_VERY_HIGH,
+					.MemDataAlignment =
+					DMA_MDATAALIGN_WORD, .PeriphDataAlignment =
+					DMA_PDATAALIGN_WORD, .FIFOMode =
+					DMA_FIFOMODE_DISABLE, .MemBurst =
+					DMA_MBURST_SINGLE, .PeriphBurst = DMA_PBURST_SINGLE };
+
+	HAL_DMA_Init(&dma_handle_adc);
+	__HAL_LINKDMA(&hadc, DMA_Handle, dma_handle_adc);
+
+	HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+	HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
 	HAL_ADC_Init(&hadc);
 
@@ -161,10 +181,31 @@ void configureDAC() {
 
 	hdac.Instance = DAC1;
 
+	// Associated DMA Initialization
+	__HAL_RCC_DMA1_CLK_ENABLE();
+
+	dma_handle_dac.Instance = DMA1_Stream5;
+	dma_handle_dac.Init = (DMA_InitTypeDef ) { .Channel = DMA_CHANNEL_7,
+					.Direction = DMA_MEMORY_TO_PERIPH, .MemInc =
+					DMA_MINC_ENABLE, .PeriphInc = DMA_PINC_DISABLE, .Mode =
+					DMA_CIRCULAR, .Priority = DMA_PRIORITY_VERY_HIGH,
+					.MemDataAlignment =
+					DMA_MDATAALIGN_WORD, .PeriphDataAlignment =
+					DMA_PDATAALIGN_WORD, .FIFOMode =
+					DMA_FIFOMODE_DISABLE, .MemBurst =
+					DMA_MBURST_SINGLE, .PeriphBurst = DMA_PBURST_SINGLE };
+
+	HAL_DMA_Init(&dma_handle_dac);
+	__HAL_LINKDMA(&hdac, DMA_Handle1, dma_handle_dac);
+
+	HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+	HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+
 	HAL_DAC_Init(&hdac);
 
-	channel1_cfg = (DAC_ChannelConfTypeDef ) { .DAC_Trigger = DAC_TRIGGER_T6_TRGO,
-					.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE };
+	channel1_cfg = (DAC_ChannelConfTypeDef ) { .DAC_Trigger =
+			DAC_TRIGGER_T6_TRGO, .DAC_OutputBuffer =
+			DAC_OUTPUTBUFFER_ENABLE };
 
 	HAL_DAC_ConfigChannel(&hdac, &channel1_cfg, DAC1_CHANNEL_1);
 }
@@ -176,28 +217,8 @@ void HAL_DAC_MspInit(DAC_HandleTypeDef *hdac) {
 						.Pin = GPIO_PIN_4, .Pull = GPIO_NOPULL };
 		HAL_GPIO_Init(GPIOA, &init);
 
-		// Associated DMA Initialization
-		__HAL_RCC_DMA1_CLK_ENABLE();
-
-		dma_handle_dac.Instance = DMA1_Stream5;
-		dma_handle_dac.Init = (DMA_InitTypeDef ) { .Channel = DMA_CHANNEL_7,
-						.Direction = DMA_MEMORY_TO_PERIPH, .MemInc =
-						DMA_MINC_ENABLE, .PeriphInc = DMA_PINC_DISABLE, .Mode =
-								DMA_CIRCULAR,
-						.Priority = DMA_PRIORITY_VERY_HIGH, .MemDataAlignment =
-						DMA_MDATAALIGN_HALFWORD, .PeriphDataAlignment =
-						DMA_PDATAALIGN_HALFWORD, .FIFOMode =
-						DMA_FIFOMODE_DISABLE, .MemBurst =
-						DMA_MBURST_INC16, .PeriphBurst = DMA_PBURST_SINGLE };
-
-		HAL_DMA_Init(&dma_handle_dac);
-		__HAL_LINKDMA(hdac, DMA_Handle1, dma_handle_dac);
-
-		HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
-		HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
 	}
 }
-
 
 void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc) {
 
@@ -207,45 +228,50 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc) {
 		GPIO_InitTypeDef init = (GPIO_InitTypeDef ) { .Mode = GPIO_MODE_ANALOG,
 						.Pin = GPIO_PIN_6, .Pull = GPIO_NOPULL };
 		HAL_GPIO_Init(GPIOA, &init);
-
-		// Associated DMA Initialization
-		__HAL_RCC_DMA2_CLK_ENABLE();
-
-		dma_handle_adc.Instance = DMA2_Stream0;
-		dma_handle_adc.Init = (DMA_InitTypeDef ) { .Channel = DMA_CHANNEL_0,
-						.Direction = DMA_PERIPH_TO_MEMORY, .MemInc =
-						DMA_MINC_ENABLE, .PeriphInc = DMA_PINC_DISABLE, .Mode =
-								DMA_CIRCULAR,
-						.Priority = DMA_PRIORITY_VERY_HIGH, .MemDataAlignment =
-						DMA_MDATAALIGN_HALFWORD, .PeriphDataAlignment =
-						DMA_PDATAALIGN_HALFWORD, .FIFOMode =
-						DMA_FIFOMODE_DISABLE, .MemBurst =
-						DMA_MBURST_INC16, .PeriphBurst = DMA_PBURST_SINGLE };
-
-		HAL_DMA_Init(&dma_handle_adc);
-		__HAL_LINKDMA(hadc, DMA_Handle, dma_handle_dac);
-
-		HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
-		HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 	}
 }
 
-void ADC_IRQHandler() { HAL_ADC_IRQHandler(&hadc); }
+void ADC_IRQHandler() {
+	HAL_ADC_IRQHandler(&hadc);
+}
 
-void DMA1_Stream5_IRQHandler() { HAL_DMA_IRQHandler(&dma_handle_dac); }
-
+void DMA1_Stream5_IRQHandler() {
+	HAL_DMA_IRQHandler(&dma_handle_dac);
+}
 
 void DMA2_Stream0_IRQHandler() {
 	HAL_DMA_IRQHandler(&dma_handle_adc);
 }
 
-void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef * hdac) {
+void TIM6_DAC_IRQHandler() {
+	HAL_TIM_IRQHandler(&tim6_handle);
+}
+
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *h) {
+	ready_half = 0;
+	half_complete_flag = 1;
+}
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *h) {
+	ready_half = 1;
 	half_complete_flag = 1;
 }
 
-void HAL_DAC_ConvHalfCpltCallbackCh2(DAC_HandleTypeDef * hdac) {
+void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
 	(void) hdac;
 }
 
+void HAL_DAC_ConvHalfCpltCallbackCh2(DAC_HandleTypeDef *hdac) {
+	(void) hdac;
+}
 
+void DAC_DMAHalfConvCpltCh2(DMA_HandleTypeDef *hdma) {
+	(void) hdma;
+}
+
+void DAC_DMAConvCpltCh2(DMA_HandleTypeDef *hdma) {
+	(void) hdma;
+}
+void DAC_DMAErrorCh2(DMA_HandleTypeDef *hdma) {
+	(void) hdma;
+}
 
