@@ -5,10 +5,10 @@
 //
 
 #include "init.h"
-#define ARRAY_SIZE 1000
-#define DMA_TRANSFER_SIZE 1
+#define ARRAY_SIZE 64
+#define DMA_TRANSFER_SIZE 4
 
-#define USE_DMA
+//#define USE_DMA
 
 void Init_DMA();
 void Transfer_Complete(DMA_HandleTypeDef *handle);
